@@ -1,21 +1,22 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { useState, useEffect, useCallback } from 'react'
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-
-interface CommentWrapper {
-  id: string,
-  type: string,
-  event: string
-}
+import { getWebSocketAuth } from '@/app/actions/websocket'
 
 interface Comment {
   id: number
   author: string
   content: string
   date: string
+}
+
+interface CommentWrapper {
+  id: string
+  type: string
+  event: string
 }
 
 export default function Comments(): JSX.Element {
@@ -35,106 +36,120 @@ export default function Comments(): JSX.Element {
   ])
   const [newComment, setNewComment] = useState('')
   const [socket, setSocket] = useState<WebSocket | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  const HTTP_DOMAIN = process.env.NEXT_PUBLIC_HTTP_DOMAIN || ''
-  const REALTIME_DOMAIN = process.env.NEXT_PUBLIC_REALTIME_DOMAIN || ''
-  const API_KEY = process.env.NEXT_PUBLIC_API_KEY || ''
-  const auth = { 'x-api-key': API_KEY, host: HTTP_DOMAIN }
+  const handleWSMessage = useCallback((data: Comment) => {
+    if (data.content) {
+      setComments(prevComments => {
+        const exists = prevComments.some(comment => comment.id === data.id)
+        if (exists) {
+          return prevComments
+        }
+        return [...prevComments, data]
+      })
+    }
+  }, [])
 
   useEffect(() => {
     const id = crypto.randomUUID()
-
-    const getAuthProtocol = (): string => {
-      const header = btoa(JSON.stringify(auth))
-        .replace(/\+/g, '-') // Convert '+' to '-'
-        .replace(/\//g, '_') // Convert '/' to '_'
-        .replace(/=+$/, '') // Remove padding `=`
-      return `header-${header}`
-    }
+    let ws: WebSocket
 
     const connectWebSocket = async () => {
       try {
+        const { protocol, domain, auth } = await getWebSocketAuth()
 
-        const socket = new WebSocket(
-          `wss://${REALTIME_DOMAIN}/event/realtime`,
-          ['aws-appsync-event-ws', getAuthProtocol()])
-        socket.onopen = () => {
-          socket.send(JSON.stringify({ type: 'connection_init' }))
+        ws = new WebSocket(
+          `wss://${domain}/event/realtime`,
+          ['aws-appsync-event-ws', protocol]
+        )
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify({
+            type: "subscribe",
+            id: id,
+            channel: "/default/comments",
+            authorization: auth // be aware here you are passing a key client side, this is where stronger auth options really matter outside of a demo.
+          }))
         }
-        socket.onmessage = (event) => {
-          const comment = JSON.parse(event.data) as CommentWrapper;
 
+        ws.onmessage = (event) => {
+          const comment = JSON.parse(event.data) as CommentWrapper
           if (comment.event) {
-            handleWSMessage(JSON.parse(comment.event) as Comment);
+            handleWSMessage(JSON.parse(comment.event) as Comment)
           }
         }
-        socket.onopen = () => socket.send(JSON.stringify({
-          type: "subscribe",
-          id: id,
-          channel: "/default/comments",
-          authorization: auth
-        }));
 
-        setSocket(socket);
+        ws.onerror = (error) => {
+          console.error('WebSocket error:', error)
+          setError('Failed to connect to chat server')
+        }
+
+        setSocket(ws)
       } catch (error) {
         console.error('Failed to connect to WebSocket:', error)
+        setError('Failed to connect to chat server')
       }
     }
 
     connectWebSocket()
 
-    // Cleanup function to close WebSocket connection when component unmounts
     return () => {
-      if (socket) {
-        socket.close()
+      if (ws) {
+        ws.close()
       }
     }
-  }, []) // Empty dependency array means this effect runs once on mount
-
-
-  const handleWSMessage = (data: Comment) => {
-    console.log(data)
-    if (data.content) {
-      (setComments([...comments, data]))
-    }
-    setNewComment("");
-  }
+  }, [handleWSMessage])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (newComment.trim() && socket) {
-      const comment: Comment = {
-        id: comments.length + 1,
-        author: 'Current User',
-        content: newComment.trim(),
-        date: 'Just now'
-      }
-      const event = {
-        "channel": "/default/comments",
-        "events": [
-          JSON.stringify(comment)
-        ]
-      }
-      // Send the comment through HTTP as bidirectionality is not yet supported.
-      await fetch(`https://${HTTP_DOMAIN}/event`, {
-        method: "POST",
-        headers: auth,
-        body: JSON.stringify(event)
+    if (!newComment.trim() || isSubmitting) return
+
+    setIsSubmitting(true)
+    setError(null)
+
+    const comment: Comment = {
+      id: comments.length + 1,
+      author: 'Current User',
+      content: newComment.trim(),
+      date: 'Just now'
+    }
+
+    try {
+      const response = await fetch('/api/comments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(comment)
       })
-      // Optimistically update the UI
-      //setComments([...comments, comment])
-      setNewComment("")
+
+      if (!response.ok) {
+        throw new Error('Failed to post comment')
+      }
+
+      setNewComment('')
+    } catch (error) {
+      setError('Failed to post comment. Please try again.')
+      console.error('Error posting comment:', error)
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
   return (
     <div className="space-y-4">
+      {error && (
+        <div className="p-4 text-red-500 bg-red-50 rounded-lg">
+          {error}
+        </div>
+      )}
+
       <div className="space-y-4">
         {comments.map((comment) => (
           <div key={comment.id} className="flex space-x-4 p-4 border rounded-lg">
             <Avatar>
-              <AvatarImage src={""} alt={comment.author} />
-              <AvatarFallback>{comment.author}</AvatarFallback>
+              <AvatarFallback>{comment.author[0]}</AvatarFallback>
             </Avatar>
             <div className="flex-1">
               <div className="flex items-center space-x-2">
@@ -153,9 +168,13 @@ export default function Comments(): JSX.Element {
           onChange={(e) => setNewComment(e.target.value)}
           placeholder="Write a comment..."
           className="w-full"
+          disabled={isSubmitting}
         />
-        <Button type="submit" disabled={!socket || !newComment.trim()}>
-          Post Comment
+        <Button
+          type="submit"
+          disabled={!socket || !newComment.trim() || isSubmitting}
+        >
+          {isSubmitting ? 'Posting...' : 'Post Comment'}
         </Button>
       </form>
     </div>
