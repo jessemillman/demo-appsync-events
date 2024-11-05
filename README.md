@@ -12,3 +12,5 @@ bun dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see a list of comments, open another private browser session to see them update in real time over websockets.
+
+![screenshot](./public/screenshot.jpeg)

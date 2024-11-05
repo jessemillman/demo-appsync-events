@@ -138,7 +138,7 @@ export default function Comments(): JSX.Element {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 mx-24 my-24">
       {error && (
         <div className="p-4 text-red-500 bg-red-50 rounded-lg">
           {error}
