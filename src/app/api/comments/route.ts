@@ -1,4 +1,4 @@
-"use server";
+'use server'
 
 const HTTP_DOMAIN = process.env.NEXT_PUBLIC_HTTP_DOMAIN
 const API_KEY = process.env.API_KEY
